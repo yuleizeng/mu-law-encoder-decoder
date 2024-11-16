@@ -1,216 +1,145 @@
-​
-  一、LPC分析的基础上实现语音的参数编码和解码
+![image](https://github.com/user-attachments/assets/cd502b16-88f4-484d-b6bc-7e55222d253f)​
+把我做的实验贴上来了/(ㄒoㄒ)/~~
 
-1、由于前面的LPC预测曲线的实验是，计算每一帧信号的LPC参数和残差信号，然后只由LPC参数和残差信号就可以恢复信号，由此我想到我们的LPC编解码实现，应该是类似于频域变换的信号处理，把一个很长的信号转化到频域后，会有许多参数（周期和相位），这样由这些参数就可以恢复信号了。所以我们可以先对每一帧的信号进行LPC计算，然后压缩LPC参数和残差信号（比特量化），然后重构信号就是解码过程，然后把每一帧按照帧长和帧移拼接就行。
+2.将上述语音信号作  -律非均匀量化编码与解码，并分别采取以下各种不同编解码方案
 
-2、当然，虽然用LPC编解码需要每一帧处理，实际需要传输的样本数是299*160个，我设置的协议是(a和residual)传输都压缩成4bit，p=10，这样数码率实际是（299*160+299*10）*4 bps。如果我们是常规的-律编解码，只需要传输24001个采样点（4bit），但是由于原始数据大小范围大，压缩有会有很大的信息损失，所以用LPC更好。实际LPC传输采样点数目多，是因为每一帧之间有重叠，也需要编解码。
+2.1在64kbps数码率（8kHz采样率，8比特每样本点）条件下，选择5个不同的 值（10-500之间）进行编解码，比较各种编解码语音和原始语音的质量（信噪比）
 
+2.1.1原理
 
+1.均匀量化
 
-3、在拼接解码数据的时候不需要用窗函数，用这个frame_k = frames(k, :)就行，当然前面有加窗的另说，因为我在前面的预测残差信号用的是加窗前的数据frame（residual = filter(a, 1, frame);）。下面是代码：
-function x_reconstruct = ola(frames,win,inc)
-    % frames: 分帧后的数据矩阵，每一列是一个帧
-    % win: 窗函数，可以是向量或标量（如果未指定窗函数）
-    % inc: 帧移
+对编码范围内小信号或大信号都采用等量化级进行量化 ,因此小信号的“信号与量化噪声比”小 ,而大信号的“信号与量化噪声比”大 ,这对小信号来说是不利的。为了提高小信号的信噪比 ,可以将量化级再细分些 ,这时大信号的信噪比也同样提高 ,但这样做的结果使数码率也随之提高 ,将要求用频带更宽的信道来传输。
 
-    nwin = length(win); % 窗长
-    nf = size(frames, 1); % 帧数
-    len = nwin; % 帧长，这里假设帧长等于窗长，如果不是，需要进行调整
+对于16位的音频数据降低至8位，直接将数据右移8位，即将数据除以2^8，这样会使得声音的噪音变大。
 
-    % 初始化重构的信号，长度至少与原始信号相同
-    x_reconstruct = zeros(1, win + len * inc * nf);
+2.非均匀量化
 
-    % 计算每个帧的起始和结束位置
-    ind_start = (0:nf-1) * inc+1;
-    ind_end = ind_start + win - 1;
+对于均匀量化存在的问题则采样非均匀量化解决。它的基本思想是对大信号进行压缩而对小信号进行较大的放大。由于小信号的幅度得到较大的放大 ,从而使小信号的信噪比大为改善。目前常用的压扩方法是对数型的 A律压缩和 μ律压缩 ,其中 μ律压缩公式：
 
-    % 对每个帧进行OLA处理
-    for k = 1:nf
-        % 应用窗函数
-        frame_k = frames(k, :) .* win;
-        % frame_k = frames(k, :) ;
-        
-        % 将加窗后的帧添加到重构信号中
-        x_reconstruct(ind_start(k):ind_end(k)) =  frame_k;
-    end
-end
+y=ln(1+μx)/ln(1+μ）
 
-4、优化思考
+其中 x 为归一化的量化器输入 , y 为归一化的量化器输出。常数 μ愈大 ,则小信号的压扩效益愈高 ,目前多采用 μ= 255。
 
-下面是一帧浊音的LPC分析，残差信号是周期的，或许残差编码的时候可以只保留周期部分？还有帧残差信号上帧移重叠的部分也要编码吗？还有a和残差的量化比特可以考虑不同的？因为他们的大小范围和精度要求不同
+其中μ255 /15折线压缩特性曲线如图 1所示：
+
+![image](https://github.com/user-attachments/assets/c5fa1f11-44c2-4d31-b517-f87b239c2ca5)
 
 
+2.1.2实验思考
 
-5、实验结果
+（1）要求得到8比特每样本点，说明需要将得到的编码后的信息强制转化成8bit的信息，我的音频输入信号是8bytes，64bit的
 
-数码率是（299*160+299*10）*4 bps，约等于203 kbps
+![image](https://github.com/user-attachments/assets/7c0a6994-dcf4-4a6c-8acc-b4cf7e822d11)
+
+
+（2）解码需要对编码公式进行反推导，主要是网上公式和PPT公式有点不一样，是归一化部分不一样，所以需要重新推导。PPT里面的公式![image](https://github.com/user-attachments/assets/85b1da8d-6e04-4ee9-8d70-f8b361fe00fc)
+加了Xmax,是为了归一化输入信号。为了方便我的代码实现，我使用的公式如下：
+
+①µ律压扩
+
+encoded\_signal= \frac{ln(1+\mu \left | x(n) \right | )}{ln(1+\mu )} sgn[x(n)]
+
+
+![image](https://github.com/user-attachments/assets/6ed33423-bfa5-4825-9854-4f03bba44bc1)
 
 
 
-由信噪比值很高可以判断，我们的编解码性能非常好。
+代码实现
+![image](https://github.com/user-attachments/assets/82246872-5eb1-4ceb-99b4-d2e3062f23b6)
 
 
 
-6、下面是matlab实现
+②µ律压扩反变换
 
-clc;
-clear;
-% 读取浊音语音帧
-[x, Fs] = audioread('cut_audio.wav');
+decoded\_signal= \frac{1}{\mu }\times  ((1+\mu)^{\left |y\right | } -1)\times  sgn[x(n)]
 
-% 2. 分帧
-frameSize = round(0.02 * Fs); % 20ms帧长
-overlap = round(0.01 * Fs);    % 10ms帧移
-frames = enframe(x, frameSize, overlap);
-
-% 3. 计算LPC系数
-p = 10; % LPC阶数
-A = zeros(p, size(frames, 2));
-bits=8;
-for i = 1:size(frames, 1)
-    frame=frames(i,:)';
-    % 应用窗函数（这里使用汉宁窗）
-    windowed_frame = frame .* hann(length(frame));
-    % 计算 LPC 系数
-    [a, e] = lpc(windowed_frame, p);
-    % 计算预测残差信号
-    residual = filter(a, 1, frame);
-    max_residual = max(abs(residual));
-    max_a = max(abs(a));
-    residual1=residual/max_residual;
-    a1=a/max_a;
-    [encoded_residual,encoded_A]=lpc_encoder(a1,residual1,bits);
-    [decoded_residual,decoded_A]=lpc_decoder(encoded_residual,encoded_A,bits);
-    decoded_residual1=decoded_residual*max_residual;
-    decoded_A1=decoded_A*max_a;
-    % 通过LPC参数滤波重构语音信号
-    reconstructed_frame=filter(1, decoded_A1, decoded_residual1)';
-    reconstructed_frames(i,:) = frame;
-end
-reconstructed_signal=ola(reconstructed_frames, frameSize,overlap);
-reconstructed_signal=reconstructed_signal';
-% 计算信噪比
-snr_values = calculateSNR(x, reconstructed_signal(1:size(x,1),:));
-% 输出信噪比
-disp('LPC SNR values(4 bit):');
-disp(snr_values);
-
-% 比较重构信号和原信号
-figure;
-subplot(2,1,1);
-plot(x); % 原始语音信号
-title('Original voiced frame');
-xlabel('Sample');
-ylabel('Amplitude');
-% 
-% % 使用逻辑索引将大于1的值设置为1
-% reconstructed_signal(reconstructed_signal > 128) = 128;
-% 
-% % 使用逻辑索引将小于-1的值设置为-1
-% reconstructed_signal(reconstructed_signal < -128) = -128;
-
-subplot(2,1,2);
-plot(reconstructed_signal(1:size(x,1),:)); % 重构的语音信号
-title('Reconstructed voiced frame');
-xlabel('Sample');
-ylabel('Amplitude');
+![image](https://github.com/user-attachments/assets/ecaa396a-03d1-46ca-8378-67ad44cc7d1e)
 
 
-function output_value = double_to_int_bits(input_value, bits)
-    % 输入参数 input_value 是一个64位有符号小数
-    % bits 是所需的比特数，可以是4、6或10
-    % 返回值 output_value 是一个有符号整数
-    
-    % 将输入值缩放到目标比特数的范围内
-    range = 2^(bits-1) - 1; % 范围为[-range, range]
-    scaled_value = input_value * range;
-    
-    % 四舍五入到最接近的整数
-    rounded_value = round(scaled_value);
-    
-    % 确保值在目标范围内
-    if rounded_value > range
-        output_value = range;
-    elseif rounded_value < -range
-        output_value = -range;
-    else
-        output_value = int8(rounded_value);
-    end
-end
-function output_value = int_to_double_bits(input_value, bits)
-    % 输入参数 input_value 是一个有符号整数
-    % bits 是所用的比特数，可以是4、6或10
-    % 返回值 output_value 是一个64位有符号小数
-    
-    % 将输入值缩放到目标范围内
-    range = 2^(bits-1) - 1; % 范围为[-range, range]
-    scaled_value = double(input_value) / range;
-    
-    % 返回缩放后的值
-    output_value = scaled_value;
-end
-function [encoded_residual,encoded_A]=lpc_encoder(A,residual,bits)
-    %残差编码
-    encoded_residual = double_to_int_bits(residual, bits);
-    %a编码
-    encoded_A = double_to_int_bits(A, bits);   
-end
-function [decoded_residual,decoded_A]=lpc_decoder(encoded_residual,encoded_A,bits)
-    %残差编码
-    decoded_residual = int_to_double_bits(encoded_residual, bits);
-    %a编码
-    decoded_A = int_to_double_bits(encoded_A, bits);   
-end
+代码实现
 
-function x_reconstruct = ola(frames,win,inc)
-    % frames: 分帧后的数据矩阵，每一列是一个帧
-    % win: 窗函数，可以是向量或标量（如果未指定窗函数）
-    % inc: 帧移
-
-    nwin = length(win); % 窗长
-    nf = size(frames, 1); % 帧数
-    len = nwin; % 帧长，这里假设帧长等于窗长，如果不是，需要进行调整
-
-    % 初始化重构的信号，长度至少与原始信号相同
-    x_reconstruct = zeros(1, win + len * inc * nf);
-
-    % 计算每个帧的起始和结束位置
-    ind_start = (0:nf-1) * inc+1;
-    ind_end = ind_start + win - 1;
-
-    % 对每个帧进行OLA处理
-    for k = 1:nf
-        % 应用窗函数
-        % frame_k = frames(k, :) .* win;
-        frame_k = frames(k, :) ;
-        
-        % 将加窗后的帧添加到重构信号中
-        x_reconstruct(ind_start(k):ind_end(k)) =  frame_k;
-    end
-end
-function snr = calculateSNR(originalSignal, noisySignal)
-    % 计算原始信号的功率
-    originalPower = sum(abs(originalSignal).^2) / length(originalSignal);
-
-    % 计算噪声信号的功率
-    noisyPower = sum(abs(noisySignal - originalSignal).^2) / length(noisySignal);
-
-    % 计算信噪比（dB）
-    snr = 10 * log10(originalPower / noisyPower);
-end
+![image](https://github.com/user-attachments/assets/84713eab-f4cd-4cbd-8259-4a6d61733360)
 
 
-二、保持LPC参数不变，怎样通过改变其残差信号，同时又可以获得可以接受的重构语音信号？给出你的重构语音波形，并与一中的重构波形比较。计算新方案下的数码率，并求解码后语音的信噪比。
+（3）我的输入音频幅度值在-0.2466-0.2868范围内，小于-1~1范围内额，所以在 -律非均匀量化编前不需要缩小到-1~1之间。但是为了使后面的音频变化更加明显，我还是对原始信号进行幅度的扩大到-1~1范围。我用输入音频除以其绝对值的最大值实现归一化，如下
 
-1、主要是要在解码得到的信号加随机噪声
+![image](https://github.com/user-attachments/assets/a099a29c-5b54-4b06-83d6-e6b98cf55647)
 
-在LPC编码中，随机噪声注入是一种技术，用于在解码过程中增加重构语音信号的自然度。这种方法通常用于改进残差信号的感知质量，尤其是在低比特率编码的情况下。
+
+然后保存下这个最大值，方便后面对解码信号进行归一化的逆变换，即
+
+![image](https://github.com/user-attachments/assets/0fd704b5-04c2-4b37-a652-704afd4736b0)
+
+
+资料查到：Mu-law变换通常应用于音频信号的数字化过程中，而音频信号的幅度范围通常是有限的，例如在16位PCM音频中，幅度范围通常在-32768到32767之间。如果输入信号的幅度超出了这个范围，进行Mu-law变换时可能会出现截断或溢出等问题，导致失真。因此，归一化可以确保输入信号的幅度范围在Mu-law变换能够处理的范围内，以避免这些问题的发生。
+![image](https://github.com/user-attachments/assets/be80e40a-a122-4608-953c-808f8cf42ad6)
 
 
 
+（4）对于8bit量化处理
+
+因为输入的编码信号时是-1~1之间的小数，64bit的double类型小数。对小数进行Mu-law变换后的数字范围还是在-1~1之间，下面这个图可以很清晰表示
 
 
-2、可以发现量化比特数越小，信号重构的就越不好。
+
+所以对于8bit，我把小数转化到-128~127之间的int8类型得到编码后的信号，此时传输出去的编码信号就是8bit的了。当接收设备得到编码后的信号，需要把编码信号按照预定的8bit规则转化到-1~1之间的64bit的double类型。然后再进行Mu-law反变换。
+
+（5）对于信噪比计算，一开始用的snr函数输出得到的信噪比都在0.003那么小，后面发现是计算信噪比的时候计算成原始信号和解码信号的比。应该是计算信号和噪声的比才对。
+
+![image](https://github.com/user-attachments/assets/5a2e231f-fdf2-4a7c-a053-3c8c8f47a842)
+
+
+
+2.1.3结果
+
+（1）编码解码后的信号结果
+
+左侧是编码后信号，右侧是解码后的信号。每一行表示不同的μ值。第一个子图是原始信号。肉眼看虽然不同μ值编码解码后的信号长得差不都，实际计算出的信噪比是有区别的。
+
+![image](https://github.com/user-attachments/assets/8a36cf24-643d-4e3c-9bac-361dc5bf29f2)
+
+
+
+（2）信噪比计算结果
+
+可以发现我的音频，随着 值的增大，SNR值是降低的，即信号编解码性能越来越差
+
+
+![image](https://github.com/user-attachments/assets/1df4622e-6533-4c0a-a890-a0a3d8145b9a)
+
+
+2.2在 条件下，采样率仍为8kHz，改变每个样本点的量化比特数为4，6和10比特三种不同情况下，比较各个解码后语音的质量(信噪比)。
+
+2.2.1实验过程
+
+一开始设计double转化成规定量化比特数的时候，最后的传输没有用固定用了int8，导致量化10bit的时候，大于8bit，超出了计算机uint8范围。后来修改成判断语句了：
+
+
+
+![image](https://github.com/user-attachments/assets/33ca34dc-36de-4c77-a4d4-f8f7560aa975)
+
+下面是错误结果：
+
+
+![image](https://github.com/user-attachments/assets/0260cc84-0b54-4073-a7c6-50f2d46001d0)
+
+
+![image](https://github.com/user-attachments/assets/275a3dfa-0619-4e58-a745-8ecb679cdb53)
+
+
+
+2.2.2实验结果
+
+下面是修改代码后的正确结果
+
+（1）左侧是编码后信号，右侧是解码后的信号。每一行表示不同的bit量化值。第一个子图是原始信号。可以看到4bit的量化编码信号类似于马赛克，是因为数据传输精度低，导致有信息损失。解码马赛克形状是因为，编码后的信息损失恢复不回来了。10bit量化的编解码结果肉眼看起来和原始信号没有什么区别，虽然原始信号是64bit编码。
+
+![image](https://github.com/user-attachments/assets/dc18bfb4-3de9-4e98-948c-b98293d50f59)
+
+
+![image](https://github.com/user-attachments/assets/39bb6c4e-55db-48c9-beed-6cbfd4598f10)
+
 
 
 
